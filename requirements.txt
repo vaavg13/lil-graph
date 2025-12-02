@@ -1,0 +1,15 @@
+arxiv
+pypandoc
+beautifulsoup4
+
+pydantic
+markdown-it-py
+langchain
+langchain-openai
+langchain-community
+faiss-cpu
+sentence-transformers
+Pillow
+networkx
+dash
+dash-cytoscape

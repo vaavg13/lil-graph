@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field
-from pydantic import field_validator, model_validator
-from pydantic.config import ConfigDict
-import math
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 
 
 class NodeType(str, Enum):
@@ -21,27 +18,18 @@ class NodeType(str, Enum):
     PROOF = "PROOF"
 
 
-class PaperNode(BaseModel):
+class BasePaperNode(BaseModel):
     id: str
     paper_id: str
     node_type: NodeType = Field(alias="type")
-
-    title: Optional[str] = None
-    caption: Optional[str] = None
-    level: Optional[int] = None
-    text: Optional[str] = None
-    asset_path: Optional[str] = None
-
+    
     children_ids: List[str] = Field(default_factory=list)
     parent_id: Optional[str] = None
-
-    summary: Optional[str] = None
-    embedding: Optional[List[float]] = None
+    
     metadata: Optional[Dict[str, Any]] = None
-    publication_date: Optional[str] = None  # ISO 8601 format
-    update_date: Optional[str] = None      # ISO 8601 format
+    publication_date: Optional[str] = None
+    update_date: Optional[str] = None
 
-    # Pydantic v2 configuration
     model_config = ConfigDict(
         extra="forbid",
         validate_assignment=True,
@@ -51,7 +39,6 @@ class PaperNode(BaseModel):
     @field_validator("children_ids")
     @classmethod
     def _dedupe_children_ids(cls, value: List[str]) -> List[str]:
-        # Preserve order, remove duplicates
         seen: set[str] = set()
         deduped: List[str] = []
         for cid in value or []:
@@ -60,81 +47,124 @@ class PaperNode(BaseModel):
                 deduped.append(cid)
         return deduped
 
-    @field_validator("level")
-    @classmethod
-    def _validate_level_non_negative(cls, value: Optional[int]) -> Optional[int]:
-        if value is None:
-            return value
-        if value < 0:
-            raise ValueError("level must be non-negative")
-        return value
-
-    @field_validator("embedding")
-    @classmethod
-    def _validate_embedding(cls, value: Optional[List[float]]) -> Optional[List[float]]:
-        if value is None:
-            return value
-        if len(value) == 0:
-            raise ValueError("embedding, if provided, must be non-empty")
-        for x in value:
-            if not isinstance(x, (int, float)) or not math.isfinite(float(x)):
-                raise ValueError("embedding must contain only finite numbers")
-        return [float(x) for x in value]
-
     @model_validator(mode="after")
-    def _validate_relations_and_type_constraints(self) -> "PaperNode":
-        # Parent/child self-consistency
+    def _validate_relations(self) -> "BasePaperNode":
         if self.parent_id is not None and self.parent_id == self.id:
             raise ValueError("parent_id cannot equal id")
         if self.id and self.children_ids and self.id in self.children_ids:
             raise ValueError("children_ids cannot include the node's own id")
-
-        # Per-type invariants
-        t = self.node_type
-        if t == NodeType.ROOT:
-            if self.parent_id is not None:
-                raise ValueError("ROOT must have parent_id=None")
-            if self.text is not None:
-                raise ValueError("ROOT must not have text")
-            if self.asset_path is not None:
-                raise ValueError("ROOT must not have asset_path")
-            if self.level is not None and self.level != 0:
-                raise ValueError("ROOT level, if set, must be 0")
-
-        elif t == NodeType.SECTION:
-            if not self.title or not self.title.strip():
-                raise ValueError("SECTION requires non-empty title")
-            if self.level is None or self.level < 1:
-                raise ValueError("SECTION requires level >= 1")
-
-        elif t == NodeType.TEXT_CHUNK:
-            if not self.text or not str(self.text).strip():
-                raise ValueError("TEXT_CHUNK requires non-empty text")
-            if self.asset_path is not None:
-                raise ValueError("TEXT_CHUNK must not have asset_path")
-            if self.level is not None:
-                raise ValueError("TEXT_CHUNK must not have level")
-
-        elif t == NodeType.FIGURE:
-            if not self.asset_path or not str(self.asset_path).strip():
-                raise ValueError(f"{t} requires asset_path")
-            if self.level is not None:
-                raise ValueError(f"{t} must not have level")
-
-        elif t in (NodeType.TABLE, NodeType.ALGORITHM, NodeType.EQUATION, NodeType.PROOF):
-            if not self.text or not str(self.text).strip():
-                raise ValueError(f"{t} requires non-empty text")
-            if self.level is not None:
-                raise ValueError(f"{t} must not have level")
-
-        elif t == NodeType.CITATION:
-            if not self.text or not str(self.text).strip():
-                raise ValueError(f"{t} requires non-empty text")
-            if t != NodeType.CITATION and self.asset_path is not None:
-                # Non-asset types must not carry an asset path
-                raise ValueError(f"{t} must not have asset_path")
-            if self.level is not None:
-                raise ValueError(f"{t} must not have level")
-
         return self
 
+
+class RootNode(BasePaperNode):
+    node_type: Literal[NodeType.ROOT] = Field(NodeType.ROOT, alias="type")
+    title: Optional[str] = None # Paper title
+    abstract: Optional[str] = None
+    
+    @model_validator(mode="after")
+    def _validate_root(self) -> "RootNode":
+        if self.parent_id is not None:
+            raise ValueError("ROOT must have parent_id=None")
+        return self
+
+
+class SectionNode(BasePaperNode):
+    node_type: Literal[NodeType.SECTION] = Field(NodeType.SECTION, alias="type")
+    title: str
+    level: int
+
+    @field_validator("title")
+    @classmethod
+    def _validate_title(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("SECTION requires non-empty title")
+        return v
+
+    @field_validator("level")
+    @classmethod
+    def _validate_level(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("SECTION requires level >= 1")
+        return v
+
+
+class ChunkNode(BasePaperNode):
+    node_type: Literal[NodeType.TEXT_CHUNK] = Field(NodeType.TEXT_CHUNK, alias="type")
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def _validate_text(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("TEXT_CHUNK requires non-empty text")
+        return v
+
+
+class FigureNode(BasePaperNode):
+    node_type: Literal[NodeType.FIGURE] = Field(NodeType.FIGURE, alias="type")
+    asset_path: str
+    caption: Optional[str] = None
+
+    @field_validator("asset_path")
+    @classmethod
+    def _validate_asset_path(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("FIGURE requires asset_path")
+        return v
+
+
+class TableNode(BasePaperNode):
+    node_type: Literal[NodeType.TABLE] = Field(NodeType.TABLE, alias="type")
+    table_content: str  # Markdown table
+    caption: Optional[str] = None
+
+    @field_validator("table_content")
+    @classmethod
+    def _validate_table_content(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("TABLE requires non-empty table_content")
+        return v
+
+
+class CitationNode(BasePaperNode):
+    node_type: Literal[NodeType.CITATION] = Field(NodeType.CITATION, alias="type")
+    
+    extracted_data: Dict[str, Any] = Field(default_factory=dict) # Dictionary for raw text and hints
+    
+    # Resolved fields (simple names, initially None)
+    doi: Optional[str] = None
+    title: Optional[str] = None
+    abstract: Optional[str] = None
+    url: Optional[str] = None
+    authors: List[str] = Field(default_factory=list)
+    venue: Optional[str] = None
+    year: Optional[int] = None
+
+
+class AlgorithmNode(BasePaperNode):
+    node_type: Literal[NodeType.ALGORITHM] = Field(NodeType.ALGORITHM, alias="type")
+    text: str
+
+
+class EquationNode(BasePaperNode):
+    node_type: Literal[NodeType.EQUATION] = Field(NodeType.EQUATION, alias="type")
+    text: str
+
+
+class ProofNode(BasePaperNode):
+    node_type: Literal[NodeType.PROOF] = Field(NodeType.PROOF, alias="type")
+    text: str
+
+
+# Union type for usage
+PaperNode = Union[
+    RootNode,
+    SectionNode,
+    ChunkNode,
+    FigureNode,
+    TableNode,
+    CitationNode,
+    AlgorithmNode,
+    EquationNode,
+    ProofNode
+]

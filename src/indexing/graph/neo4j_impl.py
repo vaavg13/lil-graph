@@ -1,5 +1,5 @@
 import os
-from typing import Dict, Any
+from typing import Dict, Any, List
 from .interface import GraphPersister
 from ..models import PaperNode, NodeType
 
@@ -30,45 +30,47 @@ class Neo4jPersister(GraphPersister):
             session.execute_write(self._create_rels_tx, nodes)
 
     def _create_nodes_tx(self, tx, nodes: Dict[str, PaperNode]):
-        # Cypher query to merge nodes
-        query = """
-        UNWIND $batch AS row
-        MERGE (n:Node {id: row.id})
-        SET n += row.props
-        """
+        # Group nodes by their specific label (from node_type)
+        # to execute cleaner MERGE (n:Label ...) queries.
+        nodes_by_type: Dict[str, List[Dict]] = {}
         
-        batch = []
         for node in nodes.values():
-            props = node.model_dump(exclude={"children_ids", "parent_id", "embedding"})
+            props = node.model_dump(exclude={"children_ids", "parent_id"})
+            
             # Ensure complex types are serialized (e.g. metadata dict to string or flattened)
             if props.get("metadata"):
                  # Flatten metadata into main props with 'meta_' prefix for simplicity in Neo4j
                 for k, v in props["metadata"].items():
                     props[f"meta_{k}"] = str(v)
                 del props["metadata"]
+
+            # Serialize extracted_data dictionary for CitationNodes
+            if props.get("extracted_data"):
+                import json
+                # Store as JSON string
+                props["extracted_data"] = json.dumps(props["extracted_data"])
             
             # Convert enums to string
             props["node_type"] = props["node_type"].value
             
-            # Add specific Label based on type (e.g. :Paper, :Section)
-            # Note: The Cypher above uses generic :Node. Ideally we dynamic label.
-            # For simplicity in this batch, we stick to :Node and use a property 'type'
+            # Group by node type (Label)
+            label = props["node_type"]
+            if label not in nodes_by_type:
+                nodes_by_type[label] = []
             
-            batch.append({"id": node.id, "props": props})
+            nodes_by_type[label].append({"id": node.id, "props": props})
             
-        tx.run(query, batch=batch)
-        
-        # Second pass: Add specific labels
-        # This is efficient enough for batching
-        for label in set(n.node_type.value for n in nodes.values()):
-            label_query = f"""
-            UNWIND $ids AS id
-            MATCH (n:Node {{id: id}})
-            SET n :{label}
+        # Execute batch merge for each label
+        for label, batch in nodes_by_type.items():
+            # MERGE on specific Label ensures we use specific indexes if available
+            # and avoids generic :Node contention.
+            query = f"""
+            UNWIND $batch AS row
+            MERGE (n:{label} {{id: row.id}})
+            SET n += row.props
+            SET n:Node
             """
-            ids = [n.id for n in nodes.values() if n.node_type.value == label]
-            if ids:
-                tx.run(label_query, ids=ids)
+            tx.run(query, batch=batch)
 
     def _create_rels_tx(self, tx, nodes: Dict[str, PaperNode]):
         # Cypher to create hierarchy
@@ -91,4 +93,3 @@ class Neo4jPersister(GraphPersister):
     def query_subgraph(self, root_id: str, depth: int = 1) -> Dict[str, Any]:
         # TODO: Implement Cypher return
         return {}
-

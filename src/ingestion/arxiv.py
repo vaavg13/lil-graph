@@ -1,8 +1,8 @@
 import os
 import re
+from typing import Tuple, Optional
 import arxiv
 from urllib.error import HTTPError
-from typing import Optional, Tuple
 
 
 ARXIV_ABS_URL_PREFIX = "https://arxiv.org/abs/"
@@ -57,7 +57,7 @@ def resolve_arxiv_id(identifier: str) -> str:
     return _extract_arxiv_id_from_entry_id(getattr(entry, "entry_id", ""))
 
 
-def download_pdf(arxiv_id: str, output_directory: str) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
+def download_pdf(arxiv_id: str, output_directory: str) -> Tuple[str, str | None, str | None, str]:
     if not arxiv_id:
         raise ValueError("arxiv_id is required")
     _ensure_directory_exists(output_directory)
@@ -80,7 +80,7 @@ def download_pdf(arxiv_id: str, output_directory: str) -> Tuple[str, Optional[st
     
     pub_date = entry.published.isoformat() if hasattr(entry, 'published') else None
     upd_date = entry.updated.isoformat() if hasattr(entry, 'updated') else None
-    title = entry.title if hasattr(entry, 'title') else None
+    title = entry.title if hasattr(entry, 'title') else ""
     
     return os.path.join(paper_dir, filename), pub_date, upd_date, title
 

@@ -1,33 +1,22 @@
 import os
 import tarfile
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
+import re
 
 from .ingestion.arxiv import (
     download_pdf,
     download_source_tarball_if_available,
     resolve_arxiv_id,
 )
-from .parsing.assets_preparer import prepare_assets
-from .parsing.bibliography_parser import (
-    build_citation_database,
-    parse_latex_bibliography,
-    build_citation_database_from_latex,
+from .parsing.pipeline import ParsingPipeline
+from .indexing.models import (
+    NodeType, RootNode, SectionNode, ChunkNode, 
+    FigureNode, TableNode, CitationNode, PaperNode
 )
-from .parsing.figtable_mapper import (
-    detect_chunk_mentions,
-    find_unreferenced_figures_in_sections,
-    parse_latex_figures_tables,
-    parse_simplified_markdown_figures,
-    parse_simplified_markdown_tables,
-)
-from .parsing.latex_flattener import flatten_latex
-from .parsing.markdown_simplifier import simplify_markdown_file
-from .parsing.structure_extractor import extract_markdown_structure
-from .indexing.models import NodeType
 from .indexing.persist import write_tree_json
-from .indexing.tree_builder import build_tree
 from .indexing.graph.neo4j_impl import Neo4jPersister
+from .resolution.crossref import CrossRefResolver
 
 
 LogEntry = Tuple[str, str]
@@ -52,12 +41,197 @@ class PipelineError(RuntimeError):
         self.logs = logs or []
 
 
+def build_nodes_from_parsed_data(
+    arxiv_id: str,
+    parsed_data: Dict[str, Any],
+    paper_title: Optional[str] = None,
+    published_date: Optional[str] = None,
+    updated_date: Optional[str] = None,
+    merge_section_chunks: bool = True,
+) -> Dict[str, PaperNode]:
+    """
+    Convert the parsed AST data into the flat dictionary of Node objects
+    expected by the indexing/persistence layer.
+    """
+    nodes: Dict[str, PaperNode] = {}
+    
+    # 1. Root Node
+    root_id = f"{arxiv_id}::ROOT"
+    
+    # Abstract is now directly in parsed_data
+    abstract_text = parsed_data.get("abstract")
+    
+    root_node = RootNode(
+        id=root_id,
+        paper_id=arxiv_id,
+        title=paper_title or parsed_data.get("metadata", {}).get("title", "Untitled"),
+        abstract=abstract_text,
+        publication_date=published_date,
+        update_date=updated_date,
+        children_ids=[]
+    )
+    nodes[root_id] = root_node
+    
+    # Stack of (node_id, level)
+    section_stack: List[Tuple[str, int]] = [(root_id, 0)]
+    
+    section_counter = 0
+    chunk_counter = 0
+    
+    for section_data in parsed_data.get("sections", []):
+        title = section_data.get("title", "")
+        level = section_data.get("level", 1)
+        section_chunks = section_data.get("chunks", [])
+        if merge_section_chunks and section_chunks:
+            merged_text_parts: List[str] = []
+            merged_citations: List[str] = []
+            for chunk_data in section_chunks:
+                text_fragment = chunk_data.get("text", "")
+                if text_fragment.strip():
+                    merged_text_parts.append(text_fragment.strip())
+                merged_citations.extend(chunk_data.get("citations", []))
+            if merged_text_parts:
+                section_chunks = [{
+                    "text": "\n\n".join(merged_text_parts),
+                    "citations": merged_citations,
+                }]
+            else:
+                section_chunks = []
+        
+        # Determine parent section
+        while len(section_stack) > 1 and section_stack[-1][1] >= level:
+            section_stack.pop()
+        
+        parent_id, _ = section_stack[-1]
+        
+        # Create Section Node
+        section_id = f"{arxiv_id}::SEC::{section_counter}"
+        section_counter += 1
+        
+        section_node = SectionNode(
+            id=section_id,
+            paper_id=arxiv_id,
+            title=title,
+            level=level,
+            parent_id=parent_id,
+            children_ids=[]
+        )
+        nodes[section_id] = section_node
+        nodes[parent_id].children_ids.append(section_id)
+        
+        # Update stack
+        section_stack.append((section_id, level))
+        
+        # Process Chunks
+        for chunk_data in section_chunks:
+            text = chunk_data.get("text", "")
+            citations = chunk_data.get("citations", [])
+            
+            if not text.strip():
+                continue
+                
+            chunk_id = f"{arxiv_id}::CHUNK::{chunk_counter}"
+            chunk_counter += 1
+            
+            chunk_node = ChunkNode(
+                id=chunk_id,
+                paper_id=arxiv_id,
+                text=text,
+                parent_id=section_id,
+                children_ids=[]
+            )
+            nodes[chunk_id] = chunk_node
+            section_node.children_ids.append(chunk_id)
+            
+            # Attach Citations to Chunk
+            for cite_key in citations:
+                cite_node_id = f"{chunk_id}::CITE::{cite_key}"
+                
+                # Get extracted data (from bib entries)
+                bibliography = parsed_data.get("bibliography", {})
+                bib_entry = bibliography.get(cite_key, {})
+                extracted_data = dict(bib_entry) if isinstance(bib_entry, dict) else {}
+                if cite_key:
+                    extracted_data.setdefault("key", cite_key)
+                    extracted_data.setdefault("citation_key", cite_key)
+                
+                # IMPORTANT: We do NOT populate title/year/authors/doi here.
+                # These must be resolved via CrossRef. Extracted data is just a hint.
+                cite_node = CitationNode(
+                    id=cite_node_id,
+                    paper_id=arxiv_id,
+                    parent_id=chunk_id,
+                    extracted_data=extracted_data, # Raw extraction preserved here
+                    title=None, 
+                    year=None,
+                    authors=[],
+                    children_ids=[]
+                )
+                nodes[cite_node_id] = cite_node
+                chunk_node.children_ids.append(cite_node_id)
+
+    # 3. Process Images
+    if parsed_data.get("images"):
+        fig_section_id = f"{arxiv_id}::SEC::FIGURES"
+        fig_section = SectionNode(
+            id=fig_section_id,
+            paper_id=arxiv_id,
+            title="Figures and Assets",
+            level=1,
+            parent_id=root_id,
+            children_ids=[]
+        )
+        nodes[fig_section_id] = fig_section
+        nodes[root_id].children_ids.append(fig_section_id)
+        
+        for i, img_path in enumerate(parsed_data.get("images", [])):
+            fig_id = f"{arxiv_id}::FIG::{i}"
+            fig_node = FigureNode(
+                id=fig_id,
+                paper_id=arxiv_id,
+                asset_path=img_path,
+                caption=None,
+                parent_id=fig_section_id
+            )
+            nodes[fig_id] = fig_node
+            fig_section.children_ids.append(fig_id)
+
+    # 4. Process Tables
+    if parsed_data.get("tables"):
+        table_section_id = f"{arxiv_id}::SEC::TABLES"
+        table_section = SectionNode(
+            id=table_section_id,
+            paper_id=arxiv_id,
+            title="Tables",
+            level=1,
+            parent_id=root_id,
+            children_ids=[]
+        )
+        nodes[table_section_id] = table_section
+        nodes[root_id].children_ids.append(table_section_id)
+        
+        for i, table_data in enumerate(parsed_data.get("tables", [])):
+            tbl_id = f"{arxiv_id}::TBL::{i}"
+            tbl_node = TableNode(
+                id=tbl_id,
+                paper_id=arxiv_id,
+                table_content=table_data.get("content", ""),
+                caption=table_data.get("caption"),
+                parent_id=table_section_id
+            )
+            nodes[tbl_id] = tbl_node
+            table_section.children_ids.append(tbl_id)
+
+    return nodes
+
+
 def run_pipeline(
     identifier: str,
     base_dir: str,
     strip_comments: bool = True,
     keep_extracted: bool = False,
     out_dir: Optional[str] = None,
+    merge_section_chunks: bool = True,
 ) -> PipelineResult:
     logs: List[LogEntry] = []
 
@@ -77,17 +251,17 @@ def run_pipeline(
     paper_dir = os.path.join(out_directory, "PAPER", arxiv_id.replace("/", "_"))
     os.makedirs(paper_dir, exist_ok=True)
 
-    # 1) Download PDF (best-effort)
+    # 1) Download PDF
     published_date = None
     updated_date = None
     paper_title = None
     try:
         pdf_path, published_date, updated_date, paper_title = download_pdf(arxiv_id, out_directory)
         log("ok", f"PDF -> {pdf_path} (Published: {published_date})")
-    except Exception as exc:  # pragma: no cover - best effort
+    except Exception as exc: 
         log("warn", f"PDF download failed: {exc}")
 
-    # 2) Download LaTeX source tarball and extract
+    # 2) Download Source
     try:
         src_tar = download_source_tarball_if_available(arxiv_id, out_directory)
         if not src_tar:
@@ -103,140 +277,67 @@ def run_pipeline(
         with tarfile.open(src_tar, "r") as tar:
             tar.extractall(path=source_dir)
         log("ok", f"Source extracted -> {source_dir}")
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc: 
         log("error", f"Source download/extract failed: {exc}")
         raise PipelineError("Source download/extract failed", logs)
 
-    # 3) Flatten LaTeX and produce paper.md
-    flattened_path = os.path.join(paper_dir, "flattened.tex")
+    # 3) Parsing Pipeline
     try:
-        flatten_latex(source_dir, flattened_path, strip_comments=strip_comments)
-        log("ok", f"Flattened -> {flattened_path}")
+        parsing_pipeline = ParsingPipeline(source_dir, paper_dir)
+        parsed_data = parsing_pipeline.run()
+        log("ok", "Parsing pipeline completed successfully")
     except Exception as exc:
-        log("error", f"Flattening failed: {exc}")
-        raise PipelineError("Flattening failed", logs)
+        log("error", f"Parsing pipeline failed: {exc}")
+        raise PipelineError(f"Parsing failed: {exc}", logs)
 
-    # 4) Prepare assets and optionally clean extracted source
-    try:
-        prepare_assets(paper_dir, keep_extracted=keep_extracted)
-        action = "kept" if keep_extracted else "removed"
-        log("ok", f"Assets prepared; extracted source {action}")
-    except Exception as exc:  # pragma: no cover - best effort
-        log("warn", f"Asset preparation failed: {exc}")
-
-    # 5) Simplify Pandoc markdown to clean, uniform markdown
-    paper_md = os.path.join(paper_dir, "paper.md")
-    if not os.path.exists(paper_md):
-        log("error", f"paper.md not found at {paper_md}")
-        raise PipelineError("paper.md not found", logs)
-
-    simplified_md_path = os.path.join(paper_dir, "paper_simplified.md")
-    try:
-        simplify_markdown_file(paper_md, simplified_md_path)
-        log("ok", f"Markdown simplified -> {simplified_md_path}")
-    except Exception as exc:  # pragma: no cover - best effort
-        log("warn", f"Markdown simplification failed: {exc}")
-        simplified_md_path = paper_md
-
-    # 6) Build structure and index
-    try:
-        sections, chunks, bibliography_text = extract_markdown_structure(simplified_md_path)
-
-        maps = parse_latex_figures_tables(flattened_path)
-        md_figures = parse_simplified_markdown_figures(simplified_md_path)
-        if md_figures:
-            maps.setdefault("figure_labels", {}).update(md_figures)
-
-        # Parse full markdown table blocks for later TABLE node population
-        md_tables = parse_simplified_markdown_tables(simplified_md_path)
-        if md_tables:
-            maps.setdefault("table_blocks", {}).update({k: v.get("text", "") for k, v in md_tables.items()})
-            # Keep captions separately to assist TREE building when mention lacks caption
-            caps = {k: v.get("caption", "") for k, v in md_tables.items() if v.get("caption")}
-            if caps:
-                maps.setdefault("table_captions", {}).update(caps)
-
-        mentions = detect_chunk_mentions(chunks)
-
-        citation_db = {}
-        # Collect all cited keys from mentions first
-        cited_keys = set()
-        for chunk_mentions in mentions.values():
-            for mention in chunk_mentions:
-                if mention.get("type") == "CITATION":
-                    cite_key = mention.get("key")
-                    if cite_key:
-                        cited_keys.add(cite_key)
-
-        # Prefer LaTeX bibliography from flattened.tex to preserve keys
+    # 4) Clean up
+    if not keep_extracted and os.path.exists(source_dir):
+        import shutil
         try:
-            latex_bib_entries = parse_latex_bibliography(flattened_path)
-        except Exception:
-            latex_bib_entries = {}
+            shutil.rmtree(source_dir)
+            log("ok", "Extracted source removed")
+        except Exception as e:
+            log("warn", f"Failed to remove source dir: {e}")
 
-        if latex_bib_entries:
-            citation_db = build_citation_database_from_latex(latex_bib_entries, cited_keys)
-            log("info", f"Parsed {len(citation_db)} citations from LaTeX bibliography")
-        elif bibliography_text:
-            # Fallback to markdown-extracted bibliography if LaTeX one missing
-            citation_db = build_citation_database(bibliography_text, cited_keys)
-            log("info", f"Parsed {len(citation_db)} citations from markdown bibliography")
-
-        nodes = build_tree(
-            arxiv_id,
-            sections,
-            chunks,
-            mentions,
-            maps,
-            None,
-            citation_db,
+    # 5) Build Nodes
+    try:
+        nodes = build_nodes_from_parsed_data(
+            arxiv_id, 
+            parsed_data, 
+            paper_title=paper_title,
             published_date=published_date,
             updated_date=updated_date,
-            title=paper_title,
+            merge_section_chunks=merge_section_chunks,
         )
+        log("ok", f"Constructed {len(nodes)} graph nodes")
+    except Exception as exc:
+        log("error", f"Node construction failed: {exc}")
+        raise PipelineError(f"Node construction failed: {exc}", logs)
 
-        referenced_assets = set()
-        for node in nodes.values():
-            node_type = getattr(node, "node_type", getattr(node, "type", None))
-            if node_type in [NodeType.FIGURE, NodeType.TABLE] and getattr(node, "asset_path", None):
-                referenced_assets.add(node.asset_path)
-
-        unreferenced = find_unreferenced_figures_in_sections(
-            simplified_md_path,
-            sections,
-            chunks,
-            referenced_assets,
-        )
-
-        nodes = build_tree(
-            arxiv_id,
-            sections,
-            chunks,
-            mentions,
-            maps,
-            unreferenced,
-            citation_db,
-            published_date=published_date,
-            updated_date=updated_date,
-            title=paper_title,
-        )
-
+    # 6) Persist and Resolve
+    tree_path = None
+    try:
+        # Check abstract fallback (if PDF download failed or extraction failed)
         abstract_path = os.path.join(paper_dir, "abstract.txt")
-        root_id = f"{arxiv_id}::ROOT"
-        if os.path.exists(abstract_path) and root_id in nodes:
-            try:
-                with open(abstract_path, "r", encoding="utf-8") as abstract_file:
-                    nodes[root_id].summary = abstract_file.read().strip()
-            except Exception:  # pragma: no cover - best effort
-                pass
+        root_node = nodes.get(f"{arxiv_id}::ROOT")
+        if root_node and not root_node.abstract and os.path.exists(abstract_path):
+             with open(abstract_path, 'r', encoding='utf-8') as f:
+                 root_node.abstract = f.read().strip()
 
+        # Online Resolution
+        try:
+            resolver = CrossRefResolver()
+            resolver.resolve_citations(nodes)
+            log("ok", "Resolved citations via CrossRef")
+        except Exception as res_exc:
+            log("warn", f"Citation resolution failed or partial: {res_exc}")
+
+        # JSON Persistence
         tree_path = write_tree_json(paper_dir, nodes)
         log("ok", f"Tree persisted -> {tree_path}")
 
-        # --- Graph Persistence ---
+        # Neo4j Persistence
         try:
-            # Connect to local Neo4j Docker instance
-            # In production, these should come from env vars
             neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
             neo4j_auth = (os.getenv("NEO4J_USER", "neo4j"), os.getenv("NEO4J_PASSWORD", "password"))
             
@@ -248,8 +349,8 @@ def run_pipeline(
             log("warn", f"Graph persistence failed: {graph_exc}")
 
     except Exception as exc:
-        log("error", f"Indexing failed: {exc}")
-        raise PipelineError("Indexing failed", logs)
+        log("error", f"Persistence/Resolution failed: {exc}")
+        raise PipelineError(f"Persistence failed: {exc}", logs)
 
     return PipelineResult(
         arxiv_id=arxiv_id,
@@ -257,7 +358,7 @@ def run_pipeline(
         nodes=nodes,
         tree_path=tree_path,
         logs=logs,
-        flattened_path=flattened_path,
-        simplified_markdown_path=simplified_md_path,
-        abstract_path=os.path.join(paper_dir, "abstract.txt"),
+        flattened_path=None,
+        simplified_markdown_path=None,
+        abstract_path=abstract_path if os.path.exists(abstract_path) else None,
     )

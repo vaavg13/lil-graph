@@ -5,10 +5,12 @@ from typing import Iterable, List, Tuple
 BASE_DIR = "/home/avgerinos/Projects/engine_v2"
 SRC_DIR = os.path.join(BASE_DIR, "src")
 OUT_DIR = BASE_DIR
-IDENTIFIER =   "1706.03762"#"1806.03762"#"1706.03762" # or "1806.03762"
+IDENTIFIER =   "2512.02008"     #"806.03762","1706.03762" # or "1806.03762"
 STRIP_COMMENTS = True
 KEEP_EXTRACTED = True
-
+VERIFY_GRAPH = False
+VERIFIER_MODEL = "gpt-5.1"
+MERGE_SECTION_CHUNKS = True
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
@@ -25,6 +27,9 @@ def main() -> int:
             strip_comments=STRIP_COMMENTS,
             keep_extracted=KEEP_EXTRACTED,
             out_dir=OUT_DIR,
+            verify_graph=VERIFY_GRAPH,
+            verifier_model=VERIFIER_MODEL,
+            merge_section_chunks=MERGE_SECTION_CHUNKS,
         )
     except PipelineError as exc:
         _emit_logs(exc.logs)

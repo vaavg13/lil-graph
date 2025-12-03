@@ -3,7 +3,7 @@ import os
 from typing import Dict
 from pydantic import TypeAdapter
 
-from indexing.models import PaperNode
+from .models import PaperNode
 
 
 def write_tree_json(paper_dir: str, nodes: Dict[str, PaperNode]) -> str:

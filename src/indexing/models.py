@@ -16,6 +16,7 @@ class NodeType(str, Enum):
     ALGORITHM = "ALGORITHM"
     EQUATION = "EQUATION"
     PROOF = "PROOF"
+    RAW_LATEX = "RAW_LATEX"
 
 
 class BasePaperNode(BaseModel):
@@ -102,15 +103,8 @@ class ChunkNode(BasePaperNode):
 
 class FigureNode(BasePaperNode):
     node_type: Literal[NodeType.FIGURE] = Field(NodeType.FIGURE, alias="type")
-    asset_path: str
+    asset_path: Optional[str] = None  # Optional for text-only figures (algorithms, etc.)
     caption: Optional[str] = None
-
-    @field_validator("asset_path")
-    @classmethod
-    def _validate_asset_path(cls, v: str) -> str:
-        if not v or not v.strip():
-            raise ValueError("FIGURE requires asset_path")
-        return v
 
 
 class TableNode(BasePaperNode):
@@ -156,6 +150,15 @@ class ProofNode(BasePaperNode):
     text: str
 
 
+class RawLatexNode(BasePaperNode):
+    node_type: Literal[NodeType.RAW_LATEX] = Field(NodeType.RAW_LATEX, alias="type")
+    content: str  # The raw LaTeX content
+    env_type: Optional[str] = None  # 'figure', 'table', 'algorithm', 'unknown'
+    extracted_labels: List[str] = Field(default_factory=list)
+    extracted_images: List[str] = Field(default_factory=list)
+    caption: Optional[str] = None
+
+
 # Union type for usage
 PaperNode = Union[
     RootNode,
@@ -166,5 +169,6 @@ PaperNode = Union[
     CitationNode,
     AlgorithmNode,
     EquationNode,
-    ProofNode
+    ProofNode,
+    RawLatexNode
 ]

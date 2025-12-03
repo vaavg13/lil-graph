@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 from typing import Dict, Any, Optional
 
+from ..parser_interface import ParserInterface
 from .utils import find_main_tex_file, get_pandoc_ast
 from .ast_processor import AstProcessor
 from .assets_preparer import copy_assets
@@ -14,16 +15,11 @@ try:
 except ImportError:
     parse_bib_file = None
 
-class ParsingPipeline:
+class PandocParser(ParserInterface):
     """
-    Orchestrates the parsing of a LaTeX project into a structured JSON representation.
+    Orchestrates the parsing of a LaTeX project into a structured JSON representation using Pandoc.
     """
     
-    def __init__(self, source_dir: str, output_dir: str):
-        self.source_dir = Path(source_dir)
-        self.output_dir = Path(output_dir)
-        self.assets_dir = self.output_dir / "assets"
-        
     def run(self) -> Dict[str, Any]:
         """
         Run the full parsing pipeline.
@@ -83,7 +79,9 @@ class ParsingPipeline:
             "sections": processor.sections,
             "bibliography": bib_data,
             "tables": processor.tables,
-            "images": processor.images
+            "images": processor.images,
+            "asset_registry": processor.asset_registry,
+            "raw_latex_blocks": processor.raw_latex_blocks
         }
         
         # Save result
@@ -164,3 +162,7 @@ def _clean_latex_reference_text(raw_text: str) -> str:
     text = LATEX_COMMAND_PATTERN.sub(" ", text)
     text = text.replace("{", "").replace("}", "")
     return " ".join(text.split()).strip()
+
+
+# Backward compatibility alias
+ParsingPipeline = PandocParser

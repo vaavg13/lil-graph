@@ -13,3 +13,5 @@ Pillow
 networkx
 dash
 dash-cytoscape
+langchain-core
+langchain-openai

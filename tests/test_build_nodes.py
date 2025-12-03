@@ -22,8 +22,18 @@ class BuildNodesTests(TestCase):
                     "title": "Intro",
                     "level": 1,
                     "chunks": [
-                        {"text": "First part.", "citations": ["refA"]},
-                        {"text": "Second part.", "citations": ["refB"]},
+                        {
+                            "chunk_id": "chunk_0",
+                            "text": "First part.",
+                            "citations": ["refA"],
+                            "references": []
+                        },
+                        {
+                            "chunk_id": "chunk_1",
+                            "text": "Second part.",
+                            "citations": ["refB"],
+                            "references": []
+                        },
                     ],
                 }
             ],

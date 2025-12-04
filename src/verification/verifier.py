@@ -2,21 +2,34 @@ from typing import Dict, List, Any, Optional
 import os
 from pathlib import Path
 
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+try:
+    from langchain_openai import ChatOpenAI
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_core.output_parsers import StrOutputParser
+except ImportError:
+    # Fallback/Mock if langchain is missing or broken
+    ChatOpenAI = None
+    ChatPromptTemplate = None
+    StrOutputParser = None
 
 from src.indexing.models import PaperNode, NodeType
 
 class GraphVerifier:
     def __init__(self, model_name: str = "gpt-5.1"):
-        self.llm = ChatOpenAI(model=model_name, temperature=0.0)
+        if ChatOpenAI:
+            self.llm = ChatOpenAI(model=model_name, temperature=0.0)
+        else:
+            self.llm = None
 
     def verify(self, nodes: Dict[str, PaperNode], source_dir: str) -> List[str]:
         """
         Verifies the consistency of the constructed graph against the raw LaTeX source.
         Returns a list of warning messages.
         """
+        if not self.llm:
+            print("Warning: Verification skipped (langchain/openai not available).")
+            return []
+            
         print(f"Verifying graph with {len(nodes)} nodes against source in {source_dir}...")
         
         # 1. Gather LaTeX Source

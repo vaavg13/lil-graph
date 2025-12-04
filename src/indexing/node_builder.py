@@ -2,7 +2,7 @@ from typing import Dict, List, Tuple, Any, Optional
 
 from .models import (
     NodeType, RootNode, SectionNode, ChunkNode,
-    FigureNode, TableNode, CitationNode, RawLatexNode, AlgorithmNode, PaperNode
+    FigureNode, ImageNode, TableNode, CitationNode, RawLatexNode, AlgorithmNode, PaperNode
 )
 
 
@@ -173,16 +173,17 @@ class NodeBuilder:
             base_label = ref_obj.get("label", "")
             
             if ref_type == "image":
-                fig_id = f"{chunk_id}::FIG::{base_label}"
-                fig_node = FigureNode(
-                    id=fig_id,
+                # Use ImageNode for actual images
+                img_id = f"{chunk_id}::IMG::{base_label}"
+                img_node = ImageNode(
+                    id=img_id,
                     paper_id=self.arxiv_id,
                     asset_path=ref_obj.get("asset_path", ""),
                     caption=ref_obj.get("caption"),
                     parent_id=chunk_id
                 )
-                self.nodes[fig_id] = fig_node
-                chunk_node.children_ids.append(fig_id)
+                self.nodes[img_id] = img_node
+                chunk_node.children_ids.append(img_id)
             
             elif ref_type == "algorithm":
                 alg_id = f"{chunk_id}::ALG::{base_label}"
@@ -201,8 +202,8 @@ class NodeBuilder:
                 fig_node = FigureNode(
                     id=fig_id,
                     paper_id=self.arxiv_id,
-                    asset_path=None,  # No image file
                     caption=ref_obj.get("caption"),
+                    content=ref_obj.get("content"),
                     parent_id=chunk_id
                 )
                 self.nodes[fig_id] = fig_node
@@ -410,16 +411,16 @@ class NodeBuilder:
             
             # Create appropriate node
             if asset_type == "image":
-                fig_id = f"{parent_id}::FIG::{label.replace('fig:', '').replace(':', '_')}"
-                fig_node = FigureNode(
-                    id=fig_id,
+                img_id = f"{parent_id}::IMG::{label.replace('fig:', '').replace(':', '_')}"
+                img_node = ImageNode(
+                    id=img_id,
                     paper_id=self.arxiv_id,
                     asset_path=asset_info.get("path", ""),
                     caption=asset_info.get("caption"),
                     parent_id=parent_id
                 )
-                self.nodes[fig_id] = fig_node
-                self.nodes[parent_id].children_ids.append(fig_id)
+                self.nodes[img_id] = img_node
+                self.nodes[parent_id].children_ids.append(img_id)
             
             elif asset_type == "algorithm":
                 alg_id = f"{parent_id}::ALG::{label.replace('alg:', '').replace(':', '_')}"
@@ -437,8 +438,8 @@ class NodeBuilder:
                 fig_node = FigureNode(
                     id=fig_id,
                     paper_id=self.arxiv_id,
-                    asset_path=None,
                     caption=asset_info.get("caption"),
+                    content=asset_info.get("content"),
                     parent_id=parent_id
                 )
                 self.nodes[fig_id] = fig_node

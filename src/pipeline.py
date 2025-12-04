@@ -9,7 +9,7 @@ from .ingestion.arxiv import (
     download_source_tarball_if_available,
     resolve_arxiv_id,
 )
-from .parsing import ParsingPipeline
+from .parsing import ParsingPipeline, LaTeXMLParser, PandocParser
 from .indexing.node_builder import build_nodes_from_parsed_data
 from .indexing.persist import write_tree_json
 from .indexing.graph.neo4j_impl import Neo4jPersister
@@ -48,6 +48,7 @@ def run_pipeline(
     merge_section_chunks: bool = True,
     verify_graph: bool = False,
     verifier_model: str = "gpt-4o",
+    parser_type: str = "latexml",  # Default to LaTeXML now
 ) -> PipelineResult:
     logs: List[LogEntry] = []
 
@@ -99,7 +100,13 @@ def run_pipeline(
 
     # 3) Parsing Pipeline
     try:
-        parsing_pipeline = ParsingPipeline(source_dir, paper_dir)
+        if parser_type == "latexml":
+            log("info", "Using LaTeXML parser")
+            parsing_pipeline = LaTeXMLParser(source_dir, paper_dir)
+        else:
+            log("info", "Using Pandoc parser")
+            parsing_pipeline = PandocParser(source_dir, paper_dir)
+            
         parsed_data = parsing_pipeline.run()
         log("ok", "Parsing pipeline completed successfully")
     except Exception as exc:

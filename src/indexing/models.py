@@ -11,6 +11,7 @@ class NodeType(str, Enum):
     SECTION = "SECTION"
     TEXT_CHUNK = "TEXT_CHUNK"
     FIGURE = "FIGURE"
+    IMAGE = "IMAGE"
     TABLE = "TABLE"
     CITATION = "CITATION"
     ALGORITHM = "ALGORITHM"
@@ -103,7 +104,14 @@ class ChunkNode(BasePaperNode):
 
 class FigureNode(BasePaperNode):
     node_type: Literal[NodeType.FIGURE] = Field(NodeType.FIGURE, alias="type")
-    asset_path: Optional[str] = None  # Optional for text-only figures (algorithms, etc.)
+    caption: Optional[str] = None
+    # For complex figures that are text/logic based, not just an image file
+    content: Optional[str] = None
+
+
+class ImageNode(BasePaperNode):
+    node_type: Literal[NodeType.IMAGE] = Field(NodeType.IMAGE, alias="type")
+    asset_path: str
     caption: Optional[str] = None
 
 
@@ -165,6 +173,7 @@ PaperNode = Union[
     SectionNode,
     ChunkNode,
     FigureNode,
+    ImageNode,
     TableNode,
     CitationNode,
     AlgorithmNode,

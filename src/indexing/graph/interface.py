@@ -2,10 +2,10 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Any
 from ..models import PaperNode
 
+
 class GraphPersister(ABC):
     """
-    Abstract interface for persisting paper nodes to a Graph Database.
-    This abstracts away whether we are using Neo4j, NetworkX, or FalkorDB.
+    Abstract interface for persisting and mutating paper graphs in a Graph DB.
     """
 
     @abstractmethod
@@ -21,9 +21,23 @@ class GraphPersister(ABC):
         Retrieve a subgraph starting from a node.
         """
         pass
-    
+
+    @abstractmethod
+    def update_citation_node(self, citation_node_id: str, fields: Dict[str, Any]) -> None:
+        """
+        Update an existing citation node with resolved metadata or status flags.
+        """
+        pass
+
+    @abstractmethod
+    def link_citation_to_child_root(self, citation_node_id: str, child_root_id: str) -> None:
+        """
+        Connect the parent of a citation node to the root node of an expanded
+        paper and remove the original citation node if appropriate.
+        """
+        pass
+
     @abstractmethod
     def close(self):
         """Clean up connections."""
         pass
-

@@ -63,11 +63,9 @@ class RootNode(BasePaperNode):
     title: Optional[str] = None # Paper title
     abstract: Optional[str] = None
     
-    @model_validator(mode="after")
-    def _validate_root(self) -> "RootNode":
-        if self.parent_id is not None:
-            raise ValueError("ROOT must have parent_id=None")
-        return self
+    # Validation for RootNode removed to allow recursive graph expansion 
+    # where a RootNode can be a child of another node.
+
 
 
 class SectionNode(BasePaperNode):

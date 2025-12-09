@@ -10,7 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from src.parsing.pipeline import extract_bibliography_from_latex  # noqa: E402
+from src.adapters.parsers.common.latex_bibliography_extractor import extract_bibliography_from_latex  # noqa: E402
 
 
 class ExtractBibliographyTests(TestCase):

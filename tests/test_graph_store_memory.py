@@ -1,14 +1,14 @@
 from pathlib import Path
 import json
 
-from src.indexing.graph.memory_impl import InMemoryGraphStore
-from src.indexing.models import (
+from src.adapters.repositories.memory_store import InMemoryGraphStore
+from src.domain.nodes import (
     CitationNode,
     ChunkNode,
     PaperNode,
     SectionNode,
 )
-from src.pipeline_steps.persist import persist_nodes
+from src.application.persist_graph import persist_nodes
 
 
 def _sample_nodes():

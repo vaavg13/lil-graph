@@ -9,8 +9,8 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from src.pipeline import build_nodes_from_parsed_data  # noqa: E402
-from src.indexing.models import ChunkNode, CitationNode  # noqa: E402
+from src.application.build_graph import build_nodes_from_parsed_data  # noqa: E402
+from src.domain.nodes import ChunkNode, CitationNode  # noqa: E402
 
 
 class BuildNodesTests(TestCase):

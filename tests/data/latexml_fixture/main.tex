@@ -1,0 +1,88 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{amsthm}
+\newtheorem{theorem}{Theorem}
+\usepackage{graphicx}
+\usepackage{tikz}
+
+\title{LaTeXML Fixture Paper}
+\author{Test Author}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This is the abstract text.
+\end{abstract}
+
+\section{Introduction}
+In this section we refer to Figure~\ref{fig:image-one}, Figure~\ref{fig:tikz},
+Table~\ref{tab:one}, Equation~\ref{eq:one}, and Theorem~\ref{thm:main}. All
+referenced objects should appear in the parsed output without losing
+information.
+
+\begin{figure}
+  % LaTeXML will still produce a graphics node even if the file is missing.
+  \centering
+  \includegraphics{figures/sample.png}
+  \caption{Sample figure caption.}
+  \label{fig:image-one}
+\end{figure}
+
+\begin{figure}
+  \centering
+  \begin{tikzpicture}[scale=1]
+    \draw[->] (0,0) -- (2,0) node[below] {$x$};
+    \draw[->] (0,0) -- (0,2) node[left] {$y$};
+    \draw (0,0) circle (0.1);
+    \draw (1,1) node {$\bullet$};
+  \end{tikzpicture}
+  \caption{A simple TikZ diagram inside a figure.}
+  \label{fig:tikz}
+\end{figure}
+
+\begin{figure}
+  \caption{Algorithm-like content inside a figure environment.}
+  \label{fig:algo-block}
+  Some pseudo-code text that should remain inside the figure node but not be
+  reclassified as an algorithm.
+\end{figure}
+
+\begin{table}
+  \centering
+  \begin{tabular}{cc}
+    A & B \\
+    1 & 2 \\
+  \end{tabular}
+  \caption{Simple table caption.}
+  \label{tab:one}
+\end{table}
+
+\begin{equation}
+  a^2 + b^2 = c^2
+  \label{eq:one}
+\end{equation}
+
+\section{Theory}
+
+\begin{theorem}\label{thm:main}
+Every foo is a bar.
+\end{theorem}
+
+\begin{proof}
+Trivial.
+\end{proof}
+
+\begin{thebibliography}{9}
+
+\bibitem{smith2020}
+John Smith.
+\textit{On Foo and Bar}.
+2020.
+
+\end{thebibliography}
+
+\end{document}
+
+

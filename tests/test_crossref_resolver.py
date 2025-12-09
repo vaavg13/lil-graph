@@ -8,8 +8,8 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from src.indexing.models import CitationNode  # noqa: E402
-from src.resolution.crossref import CrossRefResolver  # noqa: E402
+from src.domain.nodes import CitationNode  # noqa: E402
+from src.adapters.resolvers.crossref_resolver import CrossRefResolver  # noqa: E402
 
 
 class CrossRefResolverTests(TestCase):

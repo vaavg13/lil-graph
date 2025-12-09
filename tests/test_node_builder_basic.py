@@ -1,5 +1,5 @@
-from src.indexing.node_builder import build_nodes_from_parsed_data
-from src.indexing.models import NodeType
+from src.application.build_graph import build_nodes_from_parsed_data
+from src.domain.nodes import NodeType
 
 
 def test_node_builder_attaches_assets_and_raw_latex():

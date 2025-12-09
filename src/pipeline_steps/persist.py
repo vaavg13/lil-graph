@@ -1,12 +1,25 @@
 import os
-from typing import Dict, Optional, List
-from ..indexing.persist import write_tree_json
-from ..indexing.graph.neo4j_impl import Neo4jPersister
-from ..indexing.models import PaperNode
-from ..pipeline_types import PipelineError, LogEntry
+from typing import Dict, List, Optional
 
-def persist_nodes(nodes: Dict[str, PaperNode], paper_dir: str, arxiv_id: str, logs: List[LogEntry]) -> Optional[str]:
+from ..indexing.graph.interface import GraphStore
+from ..indexing.graph.neo4j_impl import Neo4jPersister
+from ..indexing.models import GraphNode
+from ..indexing.persist import write_tree_json
+from ..pipeline_types import LogEntry, PipelineError
+from ..settings import PipelineSettings
+
+
+def persist_nodes(
+    nodes: Dict[str, GraphNode],
+    paper_dir: str,
+    arxiv_id: str,
+    logs: List[LogEntry],
+    settings: Optional[PipelineSettings] = None,
+    graph_store: Optional[GraphStore] = None,
+) -> Optional[str]:
     tree_path = None
+    created_store = False
+    store: Optional[GraphStore] = graph_store
     try:
         # Check abstract fallback
         abstract_path = os.path.join(paper_dir, "abstract.txt")
@@ -21,15 +34,21 @@ def persist_nodes(nodes: Dict[str, PaperNode], paper_dir: str, arxiv_id: str, lo
 
         # Neo4j Persistence
         try:
-            neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-            neo4j_auth = (os.getenv("NEO4J_USER", "neo4j"), os.getenv("NEO4J_PASSWORD", "password"))
-            
-            graph_db = Neo4jPersister(neo4j_uri, neo4j_auth)
-            graph_db.persist_nodes(nodes)
-            graph_db.close()
-            logs.append(("ok", f"Nodes pushed to Neo4j Graph DB at {neo4j_uri}"))
+            cfg = settings or PipelineSettings.from_env()
+            if store is None:
+                store = Neo4jPersister(cfg.neo4j_uri, (cfg.neo4j_user, cfg.neo4j_password))
+                created_store = True
+
+            store.persist_nodes(nodes)
+            logs.append(("ok", "Nodes persisted to GraphStore"))
         except Exception as graph_exc:
             logs.append(("warn", f"Graph persistence failed: {graph_exc}"))
+        finally:
+            if created_store and store is not None:
+                try:
+                    store.close()
+                except Exception:
+                    pass
             
     except Exception as exc:
         logs.append(("error", f"Persistence failed: {exc}"))

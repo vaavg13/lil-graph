@@ -1,26 +1,26 @@
 import time
 import requests
 from collections import OrderedDict
-from typing import Dict, List, Optional, Any
-from ..indexing.models import PaperNode, CitationNode, NodeType
+from typing import Any, Dict, List, Optional
+
+from ..indexing.models import CitationNode, GraphNode, NodeType
 
 # CrossRef API
 # Doc: https://github.com/CrossRef/rest-api-doc
 # Good etiquette: include 'mailto' in headers
-CROSSREF_API_URL = "https://api.crossref.org/works"
+REST_API_URL = "https://api.crossref.org/works"
 
 class CrossRefResolver:
-    def __init__(self, email: str = "your_email@example.com"):
+    def __init__(self, email: str = "your_email@example.com", delay: float = 0.2, timeout: int = 10):
         self.email = email
         self.headers = {
             "User-Agent": f"EngineV2/1.0 (mailto:{self.email})"
         }
-        # CrossRef is generous but likes polite users. 
-        # No strict rate limit for "Polite" pool if we send mailto.
-        # But we should still be gentle.
-        self.delay = 0.2 
+        # CrossRef is generous but likes polite users.
+        self.delay = delay
+        self.timeout = timeout
 
-    def resolve_citations(self, nodes: Dict[str, PaperNode]) -> None:
+    def resolve_citations(self, nodes: Dict[str, GraphNode]) -> None:
         """
         Iterate over all CitationNodes in the tree and attempt to resolve them online via CrossRef.
         Updates the node fields in-place.
@@ -97,10 +97,10 @@ class CrossRefResolver:
             }
             
             response = requests.get(
-                CROSSREF_API_URL, 
-                params=params, 
-                headers=self.headers, 
-                timeout=10
+                REST_API_URL,
+                params=params,
+                headers=self.headers,
+                timeout=self.timeout,
             )
             
             if response.status_code == 200:

@@ -14,7 +14,7 @@ EXPANSION_DEPTH = 1
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
-from src.parallel_pipeline import run_parallel_pipeline
+from src.citation_expansion import run_parallel_pipeline
 
 LogEntry = Tuple[str, str]
 

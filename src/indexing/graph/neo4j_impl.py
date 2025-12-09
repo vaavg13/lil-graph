@@ -1,7 +1,8 @@
 import os
-from typing import Dict, Any, List
-from .interface import GraphPersister
-from ..models import PaperNode, NodeType
+from typing import Any, Dict, List
+
+from .interface import GraphStore
+from ..models import GraphNode
 
 # Try importing neo4j driver, handle if missing
 try:
@@ -11,7 +12,7 @@ except ImportError:
     HAS_NEO4J = False
 
 
-class Neo4jPersister(GraphPersister):
+class Neo4jPersister(GraphStore):
     """
     Production-grade Graph Database adapter.
     """
@@ -24,13 +25,13 @@ class Neo4jPersister(GraphPersister):
     def close(self):
         self.driver.close()
 
-    def persist_nodes(self, nodes: Dict[str, PaperNode]) -> None:
+    def persist_nodes(self, nodes: Dict[str, GraphNode]) -> None:
         with self.driver.session() as session:
             # Batch write for performance
             session.execute_write(self._create_nodes_tx, nodes)
             session.execute_write(self._create_rels_tx, nodes)
 
-    def _create_nodes_tx(self, tx, nodes: Dict[str, PaperNode]):
+    def _create_nodes_tx(self, tx, nodes: Dict[str, GraphNode]):
         # Group nodes by their specific label (from node_type)
         # to execute cleaner MERGE (n:Label ...) queries.
         nodes_by_type: Dict[str, List[Dict]] = {}
@@ -74,7 +75,7 @@ class Neo4jPersister(GraphPersister):
             """
             tx.run(query, batch=batch)
 
-    def _create_rels_tx(self, tx, nodes: Dict[str, PaperNode]):
+    def _create_rels_tx(self, tx, nodes: Dict[str, GraphNode]):
         # Cypher to create hierarchy
         query = """
         UNWIND $rels AS rel

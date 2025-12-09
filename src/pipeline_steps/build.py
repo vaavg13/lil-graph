@@ -1,6 +1,6 @@
 from typing import Dict, Optional, List, Any
 from ..indexing.node_builder import build_nodes_from_parsed_data
-from ..indexing.models import PaperNode
+from ..indexing.models import GraphNode
 from ..pipeline_types import PipelineError, LogEntry
 
 def build_nodes(
@@ -11,7 +11,7 @@ def build_nodes(
     updated_date: Optional[str],
     merge_section_chunks: bool,
     logs: List[LogEntry]
-) -> Dict[str, PaperNode]:
+) -> Dict[str, GraphNode]:
     try:
         nodes = build_nodes_from_parsed_data(
             arxiv_id, 
@@ -21,7 +21,11 @@ def build_nodes(
             updated_date=updated_date,
             merge_section_chunks=merge_section_chunks,
         )
-        logs.append(("ok", f"Constructed {len(nodes)} graph nodes"))
+        node_count = len(nodes)
+        logs.append(("ok", f"Constructed {node_count} graph nodes"))
+        if node_count <= 1:
+            logs.append(("error", "Only root node constructed; parsed content may be empty"))
+            raise PipelineError("Graph construction failed: no content nodes", logs)
         return nodes
     except Exception as exc:
         logs.append(("error", f"Node construction failed: {exc}"))

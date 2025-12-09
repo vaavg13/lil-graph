@@ -1,5 +1,4 @@
-import os
-from typing import Optional, Tuple, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
 from .pipeline_types import (
     PipelineError,
@@ -7,17 +6,18 @@ from .pipeline_types import (
     SinglePaperResult,
     CitationDescriptor,
 )
-from .pipeline_steps.download import download_content
 from .pipeline_steps.parse import run_parsing
 from .pipeline_steps.build import build_nodes
+from .indexing.graph.interface import GraphStore
 from .pipeline_steps.persist import persist_nodes
 from .ingestion.arxiv import resolve_arxiv_id
-from .verification.verifier import GraphVerifier
-from .indexing.models import NodeType, CitationNode, PaperNode
+from .indexing.models import NodeType, CitationNode, GraphNode
+from .settings import PipelineSettings
+from .core.factories import get_ingestion_port
 
 
 def _extract_citation_descriptors(
-    arxiv_id: str, nodes: Dict[str, PaperNode]
+    arxiv_id: str, nodes: Dict[str, GraphNode]
 ) -> List[CitationDescriptor]:
     descriptors: List[CitationDescriptor] = []
     for node in nodes.values():
@@ -44,6 +44,8 @@ def run_single_paper(
     verify_graph: bool = False,
     verifier_model: str = "gpt-4o",
     parser_type: str = "latexml",
+    settings: Optional[PipelineSettings] = None,
+    graph_store: Optional[GraphStore] = None,
 ) -> SinglePaperResult:
     """
     Process a single paper: resolve ID -> download -> parse -> build graph -> persist.
@@ -61,9 +63,11 @@ def run_single_paper(
         logs.append(("error", f"Resolve failed: {exc}"))
         raise PipelineError("Failed to resolve arXiv identifier", logs)
 
-    # Download content
+    # Download content (ingestion backend)
     try:
-        paper_dir, source_dir, paper_title, pub_date, upd_date = download_content(
+        cfg = settings or PipelineSettings.from_env()
+        ingestion = get_ingestion_port(cfg)
+        paper_dir, source_dir, paper_title, pub_date, upd_date = ingestion.download_and_extract(
             arxiv_id, out_directory, logs
         )
     except PipelineError as e:
@@ -92,12 +96,13 @@ def run_single_paper(
             nodes=None,
         )
 
-    nodes: Dict[str, PaperNode] = {}
+    nodes: Dict[str, GraphNode] = {}
     tree_path: Optional[str] = None
 
     try:
         # Parse
-        parsed_data = run_parsing(source_dir, paper_dir, parser_type, logs)
+        effective_parser = parser_type or (settings.parser_backend if settings else "latexml")
+        parsed_data = run_parsing(source_dir, paper_dir, effective_parser, logs)
 
         # Build nodes
         nodes = build_nodes(
@@ -110,19 +115,24 @@ def run_single_paper(
             logs,
         )
 
-        # Optional verification
+        # Optional verification (skip gracefully if verifier module is unavailable)
         if verify_graph:
             try:
-                verifier = GraphVerifier(model_name=verifier_model)
-                warnings = verifier.verify(nodes, source_dir)
-                if warnings:
-                    logs.append(("warn", "Graph Verification Issues Found:"))
-                    for w in warnings:
-                        logs.append(("warn", f"  - {w}"))
-                else:
-                    logs.append(("ok", "Graph verification passed with no issues."))
-            except Exception as v_exc:
-                logs.append(("warn", f"Graph verification failed to run: {v_exc}"))
+                from .verification.verifier import GraphVerifier  # type: ignore
+            except Exception as import_exc:
+                logs.append(("warn", f"Graph verification unavailable: {import_exc}"))
+            else:
+                try:
+                    verifier = GraphVerifier(model_name=verifier_model)
+                    warnings = verifier.verify(nodes, source_dir)
+                    if warnings:
+                        logs.append(("warn", "Graph Verification Issues Found:"))
+                        for w in warnings:
+                            logs.append(("warn", f"  - {w}"))
+                    else:
+                        logs.append(("ok", "Graph verification passed with no issues."))
+                except Exception as v_exc:
+                    logs.append(("warn", f"Graph verification failed to run: {v_exc}"))
 
         # Cleanup extracted source if requested
         if not keep_extracted and os.path.exists(source_dir):
@@ -135,7 +145,14 @@ def run_single_paper(
                 logs.append(("warn", f"Failed to remove source dir: {e}"))
 
         # Persist graph (JSON + Neo4j)
-        tree_path = persist_nodes(nodes, paper_dir, arxiv_id, logs)
+        tree_path = persist_nodes(
+            nodes,
+            paper_dir,
+            arxiv_id,
+            logs,
+            settings=settings,
+            graph_store=graph_store,
+        )
 
     except Exception as e:
         logs.append(("error", f"Pipeline failed: {e}"))

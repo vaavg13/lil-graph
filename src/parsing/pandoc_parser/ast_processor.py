@@ -474,11 +474,11 @@ class AstProcessor:
                     current_cites = [cite_item.get("citationId", "") for cite_item in c[0]]
                     for cid in current_cites:
                         cites.append(cid)
-                    
-                    cite_key_str = ",".join(current_cites)
-                    # Put display text first, then the citation marker
+                    # Put display text first, then one placeholder per citation key
                     walk(c[1])
-                    text_parts.append(f"{{{{cite:{cite_key_str}}}}}")
+                    for cid in current_cites:
+                        if cid:
+                            text_parts.append(f"{{{{CITATION:{cid}}}}}")
 
                 elif t == "Code":
                     text_parts.append(f"`{c[1]}`")

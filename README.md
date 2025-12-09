@@ -1,8 +1,6 @@
-# **LILGraph**: Linked Intelligent Literature Graph
+# LILGraph: Linked Intelligent Literature Graph
 
 <img src="assets/lilgraph.png" width="100%">
-
----
 
 ## What this project is
 

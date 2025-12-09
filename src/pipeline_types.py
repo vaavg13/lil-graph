@@ -11,22 +11,6 @@ class PipelineError(RuntimeError):
         self.message = message
         self.logs = logs or []
 
-
-@dataclass
-class PipelineResult:
-    """
-    Legacy-style result object used by older, single-paper flows.
-    """
-    arxiv_id: str
-    paper_dir: Optional[str]
-    nodes: Optional[Dict[str, Any]]
-    tree_path: Optional[str]
-    logs: List[LogEntry]
-    flattened_path: Optional[str] = None
-    simplified_markdown_path: Optional[str] = None
-    abstract_path: Optional[str] = None
-
-
 @dataclass
 class CitationDescriptor:
     """

@@ -18,6 +18,7 @@ class NodeType(str, Enum):
     EQUATION = "EQUATION"
     PROOF = "PROOF"
     RAW_LATEX = "RAW_LATEX"
+    BLOCK = "BLOCK"
 
 
 class BasePaperNode(BaseModel):
@@ -58,13 +59,13 @@ class BasePaperNode(BaseModel):
         return self
 
 
-class RootNode(BasePaperNode):
+class PaperNode(BasePaperNode):
     node_type: Literal[NodeType.ROOT] = Field(NodeType.ROOT, alias="type")
-    title: Optional[str] = None # Paper title
+    title: Optional[str] = None  # Paper title
     abstract: Optional[str] = None
     
-    # Validation for RootNode removed to allow recursive graph expansion 
-    # where a RootNode can be a child of another node.
+    # Validation for root paper nodes removed to allow recursive graph expansion
+    # where a PaperNode can be a child of another node.
 
 
 
@@ -156,6 +157,23 @@ class ProofNode(BasePaperNode):
     text: str
 
 
+class BlockNode(BasePaperNode):
+    """
+    Generic labeled block node (theorems, logical blocks, catch‑all \"block\"
+    assets) when we don't want to over‑specialize node types.
+    """
+    node_type: Literal[NodeType.BLOCK] = Field(NodeType.BLOCK, alias="type")
+    text: str
+    # Preserve the parser's asset type hint (e.g. "theorem", "logical-block", "block").
+    block_type: Optional[str] = None
+
+    @field_validator("text")
+    @classmethod
+    def _validate_text(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("BLOCK requires non-empty text")
+        return v
+
 class RawLatexNode(BasePaperNode):
     node_type: Literal[NodeType.RAW_LATEX] = Field(NodeType.RAW_LATEX, alias="type")
     content: str  # The raw LaTeX content
@@ -165,9 +183,9 @@ class RawLatexNode(BasePaperNode):
     caption: Optional[str] = None
 
 
-# Union type for usage
-PaperNode = Union[
-    RootNode,
+# Union type for usage: any graph node
+GraphNode = Union[
+    PaperNode,
     SectionNode,
     ChunkNode,
     FigureNode,
@@ -177,5 +195,6 @@ PaperNode = Union[
     AlgorithmNode,
     EquationNode,
     ProofNode,
+    BlockNode,
     RawLatexNode
 ]

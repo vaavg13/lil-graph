@@ -40,18 +40,30 @@ class ParserInterface(ABC):
                 - chunks: List[Dict[str, Any]] - List of text chunks, each containing:
                     - chunk_id: str - Unique identifier for the chunk
                     - text: str - The chunk text content
+                      (may include cross‑reference placeholders of the form
+                      ``{{label}}`` where ``label`` is the exact LaTeX label
+                      string, e.g. ``fig:results``)
                     - citations: List[str] - Citation keys referenced in this chunk
                     - references: List[Dict[str, Any]] - Figure/table/algorithm references, each containing:
-                        - type: str - One of: "image", "figure", "table", "algorithm"
-                        - label: str - Base label (e.g., "fig1")
-                        - full_label: str - Full label (e.g., "fig:results")
+                        - type: Optional[str] - Asset type as classified by the parser
+                          (e.g., "image", "figure", "table", "algorithm",
+                          "equation", "theorem", "proof", "logical-block",
+                          "block")
+                        - label: str - The label string used in the document
+                          and in the ``{{label}}`` placeholder (e.g., "fig:results")
+                        - full_label: str - Same as ``label``; kept for backward
+                          compatibility and convenience
                         - caption: Optional[str] - Caption text
-                        - content: Optional[str] - Table/algorithm content
+                        - content: Optional[str] - Asset content (e.g., table
+                          markdown, algorithm/theorem body text)
                         - asset_path: Optional[str] - Path to image file
             - bibliography: Dict[str, Dict[str, Any]] - Mapping from citation key to metadata
             - tables: List[Dict[str, Any]] - Table metadata
             - images: List[str] - List of image paths
-            - asset_registry: Dict[str, Dict[str, Any]] - Registry of all assets
+            - asset_registry: Dict[str, Dict[str, Any]] - Registry of all assets,
+              keyed by the exact LaTeX label string. The parser, not the node
+              builder, is responsible for classifying asset ``type``; callers
+              should not infer type from the textual placeholders.
             - raw_latex_blocks: List[Dict[str, Any]] - Raw LaTeX blocks, each containing:
                 - content: str - The raw LaTeX content
                 - chunk_id: str - Which chunk this block appeared in

@@ -1,20 +1,14 @@
-import os
-from typing import Dict, List, Optional, Set, Tuple, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .pipeline_types import LogEntry, PipelineError
-from .pipeline import run_single_paper
-from .resolution.crossref import CrossRefResolver
 from .ingestion.arxiv import resolve_arxiv_id
-from .indexing.models import PaperNode, CitationNode, NodeType
+from .indexing.graph.interface import GraphStore
 from .indexing.graph.neo4j_impl import Neo4jPersister
-
-
-def _collect_citation_nodes(nodes: Dict[str, PaperNode]) -> List[CitationNode]:
-    return [
-        n for n in nodes.values()
-        if isinstance(n, CitationNode) and n.node_type == NodeType.CITATION
-    ]
+from .indexing.models import CitationNode, GraphNode, NodeType
+from .single_paper import run_single_paper
+from .pipeline_types import LogEntry, PipelineError
+from .core.factories import get_resolution_port
+from .settings import PipelineSettings
 
 
 def _try_resolve_child_arxiv_id(cite: CitationNode) -> Optional[str]:
@@ -37,25 +31,27 @@ def run_parallel_pipeline(
     base_dir: str,
     max_depth: int,
     workers: int = 4,
+    settings: Optional[PipelineSettings] = None,
+    graph_store: Optional[GraphStore] = None,
     **pipeline_kwargs,
 ):
     """
     Level-wise parallel pipeline with deferred, bulk citation resolution and
     database-level linking of citation nodes to expanded paper roots.
     """
+    cfg = settings or pipeline_kwargs.pop("settings", None) or PipelineSettings.from_env()
+
     visited: Set[str] = set()
     frontier: Set[str] = {root_identifier}
 
     # child_arxiv_id -> List[citation_node_id] built from previous level
     pending_links: Dict[str, List[str]] = {}
 
-    neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-    neo4j_auth = (
-        os.getenv("NEO4J_USER", "neo4j"),
-        os.getenv("NEO4J_PASSWORD", "password"),
+    graph = graph_store or Neo4jPersister(
+        cfg.neo4j_uri, (cfg.neo4j_user, cfg.neo4j_password)
     )
-    graph = Neo4jPersister(neo4j_uri, neo4j_auth)
-    resolver = CrossRefResolver()
+    created_store = graph_store is None
+    resolver = get_resolution_port(cfg)
 
     try:
         for depth in range(max_depth + 1):
@@ -83,6 +79,8 @@ def run_parallel_pipeline(
                         run_single_paper,
                         pid,
                         base_dir,
+                        settings=cfg,
+                        graph_store=None,  # per-paper persistence uses its own store by default
                         **pipeline_kwargs,
                     ): pid
                     for pid in to_process
@@ -130,7 +128,7 @@ def run_parallel_pipeline(
                 pending_links = {}
 
             # 3) Resolve citations for current level in bulk and decide next frontier
-            combined_nodes: Dict[str, PaperNode] = {}
+            combined_nodes: Dict[str, GraphNode] = {}
             for pid, payload in results_by_id.items():
                 r = payload["result"]
                 if r.status != "ok" or r.nodes is None:
@@ -144,51 +142,57 @@ def run_parallel_pipeline(
             if combined_nodes:
                 # Bulk resolve citations across all papers in this level
                 resolver.resolve_citations(combined_nodes)
+            # Update citation nodes in the DB.
+            for node in combined_nodes.values():
+                if not isinstance(node, CitationNode) or node.node_type != NodeType.CITATION:
+                    continue
 
-                # Update citation nodes in the DB and compute next frontier
-                for node in combined_nodes.values():
-                    if not isinstance(node, CitationNode) or node.node_type != NodeType.CITATION:
-                        continue
+                # Push resolved metadata into Neo4j
+                update_fields: Dict[str, Any] = {}
+                if node.title is not None:
+                    update_fields["title"] = node.title
+                if node.abstract is not None:
+                    update_fields["abstract"] = node.abstract
+                if node.venue is not None:
+                    update_fields["venue"] = node.venue
+                if node.year is not None:
+                    update_fields["year"] = node.year
+                if node.url is not None:
+                    update_fields["url"] = node.url
+                if node.doi is not None:
+                    update_fields["doi"] = node.doi
+                if node.authors:
+                    update_fields["authors"] = node.authors
 
-                    # Push resolved metadata into Neo4j
-                    update_fields: Dict[str, Any] = {}
-                    if node.title is not None:
-                        update_fields["title"] = node.title
-                    if node.abstract is not None:
-                        update_fields["abstract"] = node.abstract
-                    if node.venue is not None:
-                        update_fields["venue"] = node.venue
-                    if node.year is not None:
-                        update_fields["year"] = node.year
-                    if node.url is not None:
-                        update_fields["url"] = node.url
-                    if node.doi is not None:
-                        update_fields["doi"] = node.doi
-                    if node.authors:
-                        update_fields["authors"] = node.authors
+                if update_fields:
+                    graph.update_citation_node(node.id, update_fields)
 
-                    if update_fields:
-                        graph.update_citation_node(node.id, update_fields)
+                # Skip child resolution if we've reached the max depth; avoids
+                # unnecessary arXiv lookups that were causing the post-CrossRef
+                # stall when no further expansion is requested.
+                if depth >= max_depth:
+                    continue
 
-                    # Decide whether to expand this citation
-                    child_id = _try_resolve_child_arxiv_id(node)
-                    if not child_id:
-                        continue
+                # Decide whether to expand this citation
+                child_id = _try_resolve_child_arxiv_id(node)
+                if not child_id:
+                    continue
 
-                    # Track all citations that point to this child
-                    if child_id not in next_pending_links:
-                        next_pending_links[child_id] = []
-                    next_pending_links[child_id].append(node.id)
+                # Track all citations that point to this child
+                if child_id not in next_pending_links:
+                    next_pending_links[child_id] = []
+                next_pending_links[child_id].append(node.id)
 
-                    # Only schedule processing if we haven't already seen this paper
-                    if child_id not in visited:
-                        next_frontier.add(child_id)
+                # Only schedule processing if we haven't already seen this paper
+                if child_id not in visited:
+                    next_frontier.add(child_id)
 
             # Prepare next frontier and carry links forward
             frontier = next_frontier
             pending_links = next_pending_links
 
     finally:
-        graph.close()
+        if created_store:
+            graph.close()
 
 

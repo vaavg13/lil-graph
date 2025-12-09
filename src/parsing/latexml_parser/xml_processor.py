@@ -1,4 +1,5 @@
 import re
+import base64
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -31,9 +32,8 @@ class LaTeXMLProcessor:
         self.images: List[str] = []
         self.tables: List[Dict[str, Any]] = []
         self.citations: set[str] = set()
-        self.bibliography: Dict[str, Dict[str, Any]] = {}  # Extracted bib entries
+        self.bibliography: Dict[str, Dict[str, Any]] = {}
         self.asset_registry: Dict[str, Dict[str, Any]] = {}
-        # Map internal xml:id (e.g. bib.bib1) to citation key (e.g. author2023)
         self._bib_id_map: Dict[str, str] = {}
         
         # Kept for interface parity with Pandoc parser (unused by LaTeXML)
@@ -44,22 +44,20 @@ class LaTeXMLProcessor:
         self._chunk_counter = 0
 
     def process(self, xml_path: Path) -> None:
-        """
-        Parse the XML file and populate the processor's state.
-        """
+        """Parse the XML file and populate the processor's state."""
         tree = ET.parse(xml_path)
         root = tree.getroot()
 
         # Metadata
         title_node = root.find("./ltx:title", NS)
         if title_node is not None:
-            self.metadata["title"] = self._extract_text(title_node, strip_tags=True)
+            self.metadata["title"] = self._extract_text(title_node)
 
         # Abstract
         abstract_node = root.find(".//ltx:abstract", NS)
         if abstract_node is not None:
             self.abstract_text = self._normalize_whitespace(
-                self._extract_text(abstract_node, strip_tags=True)
+                self._extract_text(abstract_node)
             )
 
         # Bibliography
@@ -76,10 +74,9 @@ class LaTeXMLProcessor:
                 self._process_section(child)
             elif tag == "para":
                 self._process_para(child, self._body_section)
-            elif tag in {"title", "metadata", "resource", "abstract", "bibliography"}:
+            elif tag in {"title", "metadata", "resource", "abstract", "bibliography", "TOC", "toc", "pagination"}:
                 continue
             else:
-                # Treat miscellaneous top-level content as part of the body section
                 self._process_generic_block(child, self._body_section)
 
         if self._body_section["chunks"]:
@@ -91,28 +88,23 @@ class LaTeXMLProcessor:
         """Extract bibliography entries from LaTeXML output."""
         for bibitem in node.findall(".//ltx:bibitem", NS):
             key = bibitem.get("key")
-            xml_id = bibitem.get("{http://www.w3.org/XML/1998/namespace}id") or bibitem.get("xml:id") # Try direct attribute first
+            xml_id = bibitem.get("{http://www.w3.org/XML/1998/namespace}id") or bibitem.get("xml:id")
             
             if not key:
                 continue
                 
-            # Populate ID map
             if xml_id:
                 self._bib_id_map[xml_id] = key
-            # Also try without namespace just in case ElementTree handles it differently
             raw_id = bibitem.get("id")
             if raw_id:
                 self._bib_id_map[raw_id] = key
                 
-            # Extract content as text
             text = self._normalize_whitespace(self._extract_text(bibitem))
             
-            # Simple author extraction if possible (LaTeXML output varies)
-            # Often the structure is specific, but text fallback is safest
             self.bibliography[key] = {
                 "key": key,
                 "text": text,
-                "authors": "",  # Parsing authors from formatted text is hard without structure
+                "authors": "",
                 "year": "",
                 "title": "",
             }
@@ -124,7 +116,7 @@ class LaTeXMLProcessor:
 
         title_node = node.find("ltx:title", NS)
         title = (
-            self._extract_text(title_node, strip_tags=True).strip()
+            self._extract_text(title_node).strip()
             if title_node is not None
             else f"Section {len(self.sections) + 1}"
         )
@@ -143,6 +135,8 @@ class LaTeXMLProcessor:
                 self._process_figure(child, section_data)
             elif child_tag == "table":
                 self._process_table(child, section_data)
+            elif child_tag == "float":
+                self._process_float(child, section_data)
             elif child_tag == "equation":
                 eq_tex = child.find(".//ltx:Math", NS)
                 tex_content = eq_tex.get("tex") if eq_tex is not None else ""
@@ -164,6 +158,8 @@ class LaTeXMLProcessor:
                 self._process_figure(child, section_data)
             elif tag == "table":
                 self._process_table(child, section_data)
+            elif tag == "float":
+                self._process_float(child, section_data)
             else:
                 self._process_generic_block(child, section_data)
 
@@ -200,12 +196,6 @@ class LaTeXMLProcessor:
         graphic = node.find(".//ltx:graphics", NS)
         image_path = graphic.get("graphic") if graphic is not None else None
 
-        # Determine type based on CONTENT, not label
-        # 1. Contains graphics -> Image
-        # 2. Contains listing or specific error -> Algorithm
-        # 3. Contains tabular -> Table (wrapped in figure)
-        # 4. Fallback -> Figure
-
         tabular = node.find(".//ltx:tabular", NS)
         listing = node.find(".//ltx:listing", NS)
         
@@ -218,14 +208,17 @@ class LaTeXMLProcessor:
 
         if image_path:
             asset_type = "image"
+            content_text = None
         elif listing is not None or has_algo_error:
-            asset_type = "algorithm"
+            asset_type = "listing"
+            # Extract listing content properly
+            content_text = self._extract_listing_content(listing if listing is not None else node)
         elif tabular is not None:
             asset_type = "table"
+            content_text = self._xml_table_to_markdown(tabular)
         else:
             asset_type = "figure"
-
-        content_text = self._normalize_whitespace(self._extract_text(node))
+            content_text = self._normalize_whitespace(self._extract_text(node))
 
         if image_path:
             self.images.append(image_path)
@@ -233,11 +226,103 @@ class LaTeXMLProcessor:
         self.asset_registry[fig_label] = {
             "type": asset_type,
             "path": image_path,
-            "content": content_text if not image_path else None,
+            "content": content_text,
             "caption": caption_text,
             "section": section_data["title"],
             "chunk_id": None,
         }
+
+    def _process_float(self, node: ET.Element, section_data: Dict[str, Any]) -> None:
+        """Process a float element (typically contains listings)."""
+        float_label = self._extract_label(node, fallback_prefix="float")
+        float_class = node.get("class", "")
+        
+        # Check for caption
+        caption_node = node.find(".//ltx:caption", NS)
+        if caption_node is None:
+            # Listings often have toccaption
+            caption_node = node.find(".//ltx:toccaption", NS)
+        caption_text = (
+            self._normalize_whitespace(self._extract_text(caption_node)) if caption_node is not None else ""
+        )
+        
+        # Determine type based on class or content
+        listing = node.find(".//ltx:listing", NS)
+        
+        if "lstlisting" in float_class or listing is not None:
+            asset_type = "listing"
+            content_text = self._extract_listing_content(listing if listing is not None else node)
+        else:
+            # Generic float - extract text content
+            asset_type = "float"
+            content_text = self._normalize_whitespace(self._extract_text(node))
+        
+        if content_text:
+            self.asset_registry[float_label] = {
+                "type": asset_type,
+                "path": None,
+                "content": content_text,
+                "caption": caption_text,
+                "section": section_data["title"],
+                "chunk_id": None,
+            }
+
+    def _extract_listing_content(self, node: ET.Element) -> str:
+        """Extract code content from a listing element."""
+        if node is None:
+            return ""
+        
+        # Try to get base64-encoded data first (most reliable)
+        data = node.get("data")
+        if data:
+            encoding = node.get("dataencoding", "")
+            if encoding == "base64":
+                try:
+                    return base64.b64decode(data).decode("utf-8")
+                except Exception:
+                    pass
+        
+        # Fall back to extracting listingline text
+        lines = []
+        for line in node.findall(".//ltx:listingline", NS):
+            line_text = self._extract_listing_line_text(line)
+            lines.append(line_text)
+        
+        if lines:
+            return "\n".join(lines)
+        
+        # Last resort: plain text extraction (but skip tags)
+        return self._normalize_whitespace(self._extract_text(node))
+
+    def _extract_listing_line_text(self, node: ET.Element) -> str:
+        """Extract text from a single listing line, handling formatting elements."""
+        parts = []
+        
+        if node.text:
+            parts.append(node.text)
+        
+        for child in node:
+            tag = self._get_local_tag(child)
+            child_class = child.get("class", "")
+            
+            # Handle space elements
+            if "ltx_lst_space" in child_class:
+                parts.append(" ")
+            elif tag == "text":
+                # Get text content
+                if child.text:
+                    parts.append(child.text)
+                # Recurse for nested elements
+                for subchild in child:
+                    parts.append(self._extract_listing_line_text(subchild))
+            else:
+                if child.text:
+                    parts.append(child.text)
+            
+            if child.tail:
+                parts.append(child.tail)
+        
+        return "".join(parts)
 
     def _process_table(self, node: ET.Element, section_data: Dict[str, Any]) -> None:
         """Extract table data preserving structure if possible."""
@@ -247,13 +332,10 @@ class LaTeXMLProcessor:
             self._normalize_whitespace(self._extract_text(caption_node)) if caption_node is not None else ""
         )
 
-        # Extract structural content
         tabular = node.find(".//ltx:tabular", NS)
         if tabular is not None:
-            # Convert to Markdown
             content = self._xml_table_to_markdown(tabular)
         else:
-            # Fallback to text content
             content = self._normalize_whitespace(self._extract_text(node))
 
         table_entry = {"label": table_label, "caption": caption_text, "content": content}
@@ -271,15 +353,11 @@ class LaTeXMLProcessor:
         """Convert ltx:tabular XML to GitHub-flavored Markdown table."""
         rows: List[List[str]] = []
         
-        # Iterate over rows
         for tr in tabular_node.findall(".//ltx:tr", NS):
             row_cells = []
             for td in tr.findall(".//ltx:td", NS):
-                # Extract text from cell
                 cell_text = self._extract_text(td).strip()
-                # Normalize spaces but keep internal spacing
                 cell_text = re.sub(r"\s+", " ", cell_text)
-                # Escape pipes to avoid breaking markdown table
                 cell_text = cell_text.replace("|", "\\|")
                 row_cells.append(cell_text)
             
@@ -289,30 +367,22 @@ class LaTeXMLProcessor:
         if not rows:
             return ""
             
-        # Determine max columns to pad rows if necessary
         max_cols = max(len(r) for r in rows)
         
-        # Build Markdown
         md_lines = []
-        
-        # Header row (use first row as header)
         header = rows[0]
-        # Pad header if needed
         header += [""] * (max_cols - len(header))
         md_lines.append("| " + " | ".join(header) + " |")
-        
-        # Separator row
         md_lines.append("| " + " | ".join(["---"] * max_cols) + " |")
         
-        # Data rows
         for row in rows[1:]:
-            # Pad row if needed
             row += [""] * (max_cols - len(row))
             md_lines.append("| " + " | ".join(row) + " |")
             
         return "\n".join(md_lines)
 
-    def _extract_text(self, node: Optional[ET.Element], strip_tags: bool = False) -> str:
+    def _extract_text(self, node: Optional[ET.Element]) -> str:
+        """Extract text from an XML node, handling special elements."""
         if node is None:
             return ""
 
@@ -324,29 +394,51 @@ class LaTeXMLProcessor:
         for child in list(node):
             tag = self._get_local_tag(child)
 
-            if tag == "Math":
+            # Skip container elements that shouldn't contribute text
+            if tag == "tags":
+                # Skip the entire tags container
+                if child.tail:
+                    parts.append(child.tail)
+                continue
+            
+            if tag == "tag":
+                # Only include tag text if it's a simple number/letter reference
+                # Skip verbose role tags like "creftype", "creftypecap", etc.
+                role = child.get("role", "")
+                if role and role not in ("refnum", "typerefnum"):
+                    if child.tail:
+                        parts.append(child.tail)
+                    continue
+                # For refnum/typerefnum, include the text
+                text_value = child.text or ""
+                close = child.get("close", "")
+                parts.append(text_value + close)
+            elif tag == "Math":
                 tex = child.get("tex")
                 if tex:
                     parts.append(f"${tex}$")
             elif tag == "cite":
-                keys = self._extract_citations(child)
+                keys = self._extract_cite_keys(child)
                 if keys:
                     parts.append(f"{{{{cite:{','.join(keys)}}}}}")
                     self.citations.update(keys)
                 else:
-                    parts.append(self._extract_text(child, strip_tags))
+                    parts.append(self._extract_text(child))
             elif tag == "ref":
                 label = self._normalize_label(child.get("labelref") or "")
-                placeholder = self._format_reference_placeholder(label)
-                parts.append(placeholder)
-            elif tag == "tag":
-                # Always include tag text (e.g. section numbers, "Appendix A", etc.)
-                # even if stripping other markup
-                text_value = child.text or ""
-                close = child.get("close", "")
-                parts.append(text_value + close)
+                if label:
+                    parts.append(f"{{{{{label}}}}}")
+            elif tag in ("listing", "listingline"):
+                # Skip listing content in regular text extraction
+                pass
+            elif tag == "toccaption":
+                # Skip table of contents captions
+                pass
+            elif tag == "caption":
+                # Process caption content
+                parts.append(self._extract_text(child))
             else:
-                parts.append(self._extract_text(child, strip_tags))
+                parts.append(self._extract_text(child))
 
             if child.tail:
                 parts.append(child.tail)
@@ -354,26 +446,30 @@ class LaTeXMLProcessor:
         text = "".join(parts)
         return text
 
+    def _extract_cite_keys(self, cite_node: ET.Element) -> List[str]:
+        """Extract citation keys from a cite element directly."""
+        keys: List[str] = []
+        for ref in cite_node.findall(".//ltx:ref", NS):
+            idref = ref.get("idref")
+            if idref and idref in self._bib_id_map:
+                keys.append(self._bib_id_map[idref])
+            else:
+                raw = ref.get("labelref")
+                if raw:
+                    normalized = self._normalize_label(raw)
+                    if normalized:
+                        keys.append(normalized)
+        return keys
+
     def _extract_citations(self, node: ET.Element) -> List[str]:
+        """Extract all citation keys from a node (searches for cite elements)."""
         cites: List[str] = []
-        # Only look for refs inside cite tags to avoid picking up normal cross-refs
         for cite in node.findall(".//ltx:cite", NS):
-            for ref in cite.findall(".//ltx:ref", NS):
-                idref = ref.get("idref")
-                # If idref points to a known bibliography entry, use its key
-                if idref and idref in self._bib_id_map:
-                    cites.append(self._bib_id_map[idref])
-                else:
-                    # Fallback: check labelref or legacy behavior
-                    # Only if we are strictly inside a citation tag
-                    raw = ref.get("labelref")
-                    if raw:
-                        normalized = self._normalize_label(raw)
-                        if normalized:
-                            cites.append(normalized)
+            cites.extend(self._extract_cite_keys(cite))
         return cites
 
     def _extract_references(self, node: ET.Element) -> List[Dict[str, Any]]:
+        """Extract cross-references from a node."""
         refs: List[Dict[str, Any]] = []
         for ref_node in node.findall(".//ltx:ref", NS):
             label = self._normalize_label(ref_node.get("labelref") or "")
@@ -383,11 +479,15 @@ class LaTeXMLProcessor:
         return refs
 
     def _process_generic_block(self, node: ET.Element, section_data: Dict[str, Any]) -> None:
+        """Process generic block elements."""
         tag = self._get_local_tag(node)
+        
         if tag == "figure":
             self._process_figure(node, section_data)
         elif tag == "table":
             self._process_table(node, section_data)
+        elif tag == "float":
+            self._process_float(node, section_data)
         elif tag == "para":
             self._process_para(node, section_data)
         elif tag == "equation":
@@ -399,8 +499,47 @@ class LaTeXMLProcessor:
             text = self._normalize_whitespace(self._extract_text(node))
             if text:
                 self._create_chunk(text, section_data, node)
+        elif tag in ("itemize", "enumerate", "description"):
+            self._process_list(node, section_data)
+        elif tag in ("theorem", "proof", "lemma", "corollary", "definition", "remark", "example"):
+            # Labeled logical blocks - register as assets
+            label = self._extract_label(node, fallback_prefix=tag)
+            text = self._normalize_whitespace(self._extract_text(node))
+            if text:
+                self.asset_registry[label] = {
+                    "type": tag,
+                    "path": None,
+                    "content": text,
+                    "caption": None,
+                    "section": section_data["title"],
+                    "chunk_id": None,
+                }
+                # Also create a chunk for it
+                self._create_chunk(text, section_data, node)
+        else:
+            # For other elements, just extract text if any
+            text = self._normalize_whitespace(self._extract_text(node))
+            if text:
+                self._create_chunk(text, section_data, node)
+
+    def _process_list(self, node: ET.Element, section_data: Dict[str, Any]) -> None:
+        """Process list elements (itemize, enumerate, description)."""
+        tag = self._get_local_tag(node)
+        is_ordered = tag == "enumerate"
+        items: List[str] = []
+        
+        for i, item in enumerate(node.findall("./ltx:item", NS)):
+            item_text = self._normalize_whitespace(self._extract_text(item))
+            if not item_text:
+                continue
+            prefix = f"{i + 1}. " if is_ordered else "- "
+            items.append(f"{prefix}{item_text}")
+        
+        if items:
+            self._create_chunk("\n".join(items), section_data, node)
 
     def _resolve_forward_references(self) -> None:
+        """Resolve forward references to assets."""
         for section in self.sections:
             for chunk in section.get("chunks", []):
                 refs = chunk.get("references", [])
@@ -417,68 +556,42 @@ class LaTeXMLProcessor:
                     ref_obj["caption"] = asset.get("caption")
 
     def _extract_label(self, node: ET.Element, fallback_prefix: str = "fig") -> str:
+        """Extract label from a node."""
         raw_labels = node.get("labels")
         if raw_labels:
             return self._normalize_label(raw_labels.split()[0])
-        xml_id = node.get("xml:id")
+        xml_id = node.get("xml:id") or node.get("{http://www.w3.org/XML/1998/namespace}id") or node.get("id")
         if xml_id:
             return self._normalize_label(xml_id)
         return f"{fallback_prefix}:{len(self.asset_registry)}"
 
     def _normalize_label(self, label: str) -> str:
+        """Normalize a label by removing LABEL: prefix."""
         if not label:
             return ""
         if label.startswith("LABEL:"):
-            label = label[len("LABEL:") :]
+            label = label[len("LABEL:"):]
         return label
-
-    def _strip_prefix(self, label: str) -> str:
-        prefixes = ["fig:", "figure:", "tab:", "table:", "tbl:", "eq:", "equation:"]
-        lowered = label.lower()
-        for prefix in prefixes:
-            if lowered.startswith(prefix):
-                return label[len(prefix) :]
-        return label
-
-    def _guess_label_type(self, label: str) -> str:
-        # We do not guess types from labels as it is unreliable.
-        # Types are determined by the content/structure of the referenced asset.
-        return "unknown"
-
-    def _format_reference_placeholder(self, label: str) -> str:
-        if not label:
-            return ""
-        ref_type = self._guess_label_type(label)
-        base = self._strip_prefix(label)
-        if ref_type == "image":
-            return f"{{{{fig:{base}}}}}"
-        if ref_type == "table":
-            return f"{{{{tbl:{base}}}}}"
-        if ref_type == "algorithm":
-            return f"{{{{alg:{base}}}}}"
-        if ref_type == "equation":
-            return f"{{{{eq:{base}}}}}"
-        return f"{{{{ref:{base}}}}}"
 
     def _build_reference_entry(self, label: str) -> Dict[str, Any]:
+        """Build a reference entry for a label."""
         asset = self.asset_registry.get(label, {})
-        base = self._strip_prefix(label)
-        ref_type = asset.get("type") or self._guess_label_type(label)
         return {
             "full_label": label,
-            "label": base,
-            "type": ref_type,
+            "label": label,  # Keep full label, no stripping
+            "type": asset.get("type") or "unknown",
             "asset_path": asset.get("path"),
             "content": asset.get("content"),
             "caption": asset.get("caption"),
         }
 
     def _normalize_whitespace(self, text: str) -> str:
+        """Normalize whitespace in text."""
         text = text.replace("\u00a0", " ")
         return re.sub(r"\s+", " ", text).strip()
 
     def _get_local_tag(self, node: ET.Element) -> str:
+        """Get the local tag name without namespace."""
         if "}" in node.tag:
             return node.tag.split("}", 1)[1]
         return node.tag
-

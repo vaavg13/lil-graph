@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Any
-from ..models import PaperNode
+from typing import Any, Dict, List, Optional
+
+from ..models import GraphNode
 
 
 class GraphPersister(ABC):
@@ -9,7 +10,7 @@ class GraphPersister(ABC):
     """
 
     @abstractmethod
-    def persist_nodes(self, nodes: Dict[str, PaperNode]) -> None:
+    def persist_nodes(self, nodes: Dict[str, GraphNode]) -> None:
         """
         Write a batch of nodes and their relationships to the graph.
         """
@@ -41,3 +42,13 @@ class GraphPersister(ABC):
     def close(self):
         """Clean up connections."""
         pass
+
+
+class GraphStore(GraphPersister):
+    """
+    Alias for graph storage port. New code should depend on GraphStore while
+    legacy code can continue to import GraphPersister. Both share the same
+    contract today.
+    """
+
+    pass

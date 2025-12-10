@@ -48,3 +48,6 @@ index/
 *.tar.gz
 *.tgz
 *.zip
+
+# pytest cache
+.pytest_cache/

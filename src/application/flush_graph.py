@@ -36,3 +36,4 @@ def flush_default_store(
             store.close()
         except Exception:
             pass
+
